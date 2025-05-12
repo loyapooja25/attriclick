@@ -1,46 +1,14 @@
-# Final Streamlit App with All Fixes and Clean Logic
+# Final Streamlit App with Top Leaver Retention Logic
 import streamlit as st
 import pandas as pd
 import joblib
-from sklearn.preprocessing import LabelEncoder
 
 # Load models
 attr_model = joblib.load("best_attrition_mmmodelaa-aa_cccatboostt.pkl")
 perf_model = joblib.load("catboost_best_modell-b.pkl")
 
-# Load and process training data for reasoning
-@st.cache_data
-def load_reasoning_data():
-    df = pd.read_csv("WA_Fn-UseC_-HR-Employee-Attrition.csv")
-    df = df.drop(columns=["EmployeeCount", "EmployeeNumber", "StandardHours", "Over18"])
-    for col in df.select_dtypes(include='object').columns:
-        le = LabelEncoder()
-        df[col] = le.fit_transform(df[col])
-    leavers = df[df['Attrition'] == 1]
-    stayers = df[df['Attrition'] == 0]
-
-    reasoning = {}
-    for col in df.columns:
-        if col != 'Attrition':
-            leaver_avg = leavers[col].mean()
-            stayer_avg = stayers[col].mean()
-            diff = leaver_avg - stayer_avg
-            if abs(diff) > 0.2:
-                reasoning[col] = {
-                    "suggestion": f"Focus on improving or balancing '{col}' to better align with retained employee characteristics."
-                }
-    return reasoning
-
-reasoning_map = load_reasoning_data()
-
-# Reason and suggestion generator
-def explain_reason(row):
-    reasons, suggestions = [], []
-    for key in row.keys():
-        if key in reasoning_map:
-            reasons.append(f"{key} may be contributing to attrition based on historical data.")
-            suggestions.append(reasoning_map[key]['suggestion'])
-    return reasons, suggestions
+st.title("Attrition & Performance Risk Analyzer")
+option = st.radio("Choose Mode", ["Single Prediction", "Upload CSV for Bulk Prediction"])
 
 # Encoded mappings
 business_travel_map = {"Travel_Rarely": 1, "Travel_Frequently": 2, "Non-Travel": 0}
@@ -57,9 +25,6 @@ job_role_map = {
 marital_status_map = {"Married": 0, "Single": 1, "Divorced": 2}
 gender_map = {"Male": 1, "Female": 0}
 overtime_map = {"Yes": 1, "No": 0}
-
-st.title("Attrition & Performance Risk Analyzer")
-option = st.radio("Choose Mode", ["Single Prediction", "Upload CSV for Bulk Prediction"])
 
 # Single Prediction Mode
 if option == "Single Prediction":
@@ -144,51 +109,32 @@ if option == "Single Prediction":
         st.write("Performance Rating:", perf)
 
         if attr == 1 and perf >= 3:
-            st.warning("High-performing employee at risk")
-        elif attr == 1:
-            st.warning("Likely to leave")
+            st.info(" High-performing employee likely to leave → RETAIN")
+        elif attr == 1 and perf < 3:
+            st.warning("Low performer likely to leave → May not prioritize retention")
+        elif attr == 0 and perf >= 3:
+            st.success("High-performing employee staying → Healthy situation")
         else:
-            st.success("No immediate attrition risk")
-
-        st.subheader("Data-Inferred Reasons and Retention Suggestions")
-        reasons, suggestions = explain_reason(attr_input.iloc[0])
-        if reasons:
-            st.write("Reasons:")
-            for r in reasons:
-                st.write("-", r)
-            st.write("Recommendations:")
-            for s in suggestions:
-                st.write("-", s)
-        else:
-            st.write("No clear risks identified from historical patterns.")
+            st.write("Low performer staying → Consider performance improvement plan")
 
 # Bulk CSV Upload
 if option == "Upload CSV for Bulk Prediction":
     file = st.file_uploader("Upload file with employee data", type=["csv"])
     if file:
         df = pd.read_csv(file)
-        attr_preds = attr_model.predict(df)
-        perf_preds = perf_model.predict(df)
+        df["Attrition_Prediction"] = attr_model.predict(df)
+        df["Performance_Prediction"] = perf_model.predict(df)
 
-        df["Attrition_Prediction"] = attr_preds
-        df["Performance_Prediction"] = perf_preds
+        df["Risk_Flag"] = df.apply(
+            lambda row: "High-performing employee at risk" if row['Attrition_Prediction'] == 1 and row['Performance_Prediction'] >= 3
+            else ("Likely to leave" if row['Attrition_Prediction'] == 1 else "No immediate attrition risk"), axis=1)
 
-        reasons_list, suggestions_list, flags = [], [], []
-        for _, row in df.iterrows():
-            reasons, suggestions = explain_reason(row)
-            reasons_list.append(" | ".join(reasons))
-            suggestions_list.append(" | ".join(suggestions))
-            if row['Attrition_Prediction'] == 1 and row['Performance_Prediction'] >= 3:
-                flags.append("High-performing employee at risk")
-            elif row['Attrition_Prediction'] == 1:
-                flags.append("Likely to leave")
-            else:
-                flags.append("No immediate attrition risk")
+        top_retention = df[(df["Attrition_Prediction"] == 1) & (df["Performance_Prediction"] >= 3)].copy()
+        top_retention = top_retention.sort_values(by="Performance_Prediction", ascending=False).head(10)
 
-        df["Reasons"] = reasons_list
-        df["Suggestions"] = suggestions_list
-        df["Risk_Flag"] = flags
+        st.subheader("Top 10 High-Performers Likely to Leave")
+        st.dataframe(top_retention)
 
-        st.subheader("Batch Prediction Results")
+        st.subheader("Full Prediction Results")
         st.dataframe(df)
         st.download_button("Download Results", df.to_csv(index=False), file_name="prediction_results.csv")
